@@ -67,7 +67,13 @@ const apiLimiter = rateLimit({
   }
 });
 
-app.use('/api/', apiLimiter);
+// Rate limit write endpoints only; status/result polling runs every 2s and must not be throttled
+app.use('/api/', (req, res, next) => {
+  if (req.method === 'GET') {
+    return next();
+  }
+  return apiLimiter(req, res, next);
+});
 
 // Serve static assets in production if needed
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
