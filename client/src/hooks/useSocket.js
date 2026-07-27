@@ -8,27 +8,40 @@ import {
   setStatus, 
   setProgress, 
   setResult, 
-  updateReadmeStream, 
   setError 
 } from '../features/analysisSlice.js';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
 
+// Singleton survives React StrictMode remounts without tearing down mid-handshake
+let sharedSocket = null;
+
+const getSharedSocket = () => {
+  if (!sharedSocket) {
+    sharedSocket = io(BACKEND_URL, {
+      withCredentials: true,
+      transports: ['polling', 'websocket'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000
+    });
+  }
+  return sharedSocket;
+};
+
 export const useSocket = () => {
   const dispatch = useDispatch();
   const socketRef = useRef(null);
+  const jobIdRef = useRef(null);
   const { jobId } = useSelector((state) => state.upload);
 
-  useEffect(() => {
-    // 1. Initialize Socket Connection
-    const socket = io(BACKEND_URL, {
-      withCredentials: true,
-      transports: ['websocket', 'polling']
-    });
+  jobIdRef.current = jobId;
 
+  useEffect(() => {
+    const socket = getSharedSocket();
     socketRef.current = socket;
 
-    socket.on('connect', () => {
+    const onConnect = () => {
       dispatch(setConnected(true));
       dispatch(addLog({
         timestamp: new Date().toISOString(),
@@ -36,64 +49,27 @@ export const useSocket = () => {
         message: 'Socket connection established with backend.'
       }));
 
-      // Join job room if jobId is active
-      if (jobId) {
-        socket.emit('join-job', { jobId });
+      if (jobIdRef.current) {
+        socket.emit('join-job', { jobId: jobIdRef.current });
       }
-    });
+    };
 
-    socket.on('joined', (data) => {
+    const onJoined = (data) => {
       dispatch(addLog({
         timestamp: new Date().toISOString(),
         stage: 'Socket',
         message: `Registered room channel: ${data.jobId}`
       }));
-    });
+    };
 
-    socket.on('disconnect', () => {
+    const onDisconnect = () => {
       dispatch(setConnected(false));
       dispatch(addLog({
         timestamp: new Date().toISOString(),
         stage: 'Socket',
         message: 'Socket connection closed.'
       }));
-    });
-
-    // 2. Register job scanners listeners
-    socket.on('upload:progress', (data) => handleProgressEvent(data, 'Ingestion'));
-    socket.on('repository:scan', (data) => handleProgressEvent(data, 'Scanner'));
-    socket.on('parser:progress', (data) => handleProgressEvent(data, 'Parser'));
-    socket.on('chunk:progress', (data) => handleProgressEvent(data, 'Chunk'));
-
-    // Streaming token from Groq stage
-    socket.on('groq:stream', (data) => {
-      // Stream raw character to markdown preview
-      dispatch(updateReadmeStream(data.log));
-    });
-
-    // Analysis successfully finished
-    socket.on('analysis:done', (data) => {
-      dispatch(setResult(data.result));
-      dispatch(setLoading(false));
-      dispatch(setProgress(100));
-      dispatch(setStatus('completed'));
-      dispatch(addLog({
-        timestamp: new Date().toISOString(),
-        stage: 'Finished',
-        message: 'Repository intelligence report compilation success.'
-      }));
-    });
-
-    // Error event
-    socket.on('error', (data) => {
-      dispatch(setError(data.error));
-      dispatch(setLoading(false));
-      dispatch(addLog({
-        timestamp: new Date().toISOString(),
-        stage: 'Error',
-        message: `Pipeline halted: ${data.error}`
-      }));
-    });
+    };
 
     const handleProgressEvent = (data, stage) => {
       dispatch(addLog({
@@ -105,11 +81,57 @@ export const useSocket = () => {
       dispatch(setStatus(data.stage.toLowerCase()));
     };
 
-    // Clean up connections on unmount
+    const onUploadProgress = (data) => handleProgressEvent(data, 'Ingestion');
+    const onRepositoryScan = (data) => handleProgressEvent(data, 'Scanner');
+    const onParserProgress = (data) => handleProgressEvent(data, 'Parser');
+    const onChunkProgress = (data) => handleProgressEvent(data, 'Chunk');
+
+    const onAnalysisDone = (data) => {
+      dispatch(setResult(data.result));
+      dispatch(setLoading(false));
+      dispatch(setProgress(100));
+      dispatch(setStatus('completed'));
+      dispatch(addLog({
+        timestamp: new Date().toISOString(),
+        stage: 'Finished',
+        message: 'Repository intelligence report compilation success.'
+      }));
+    };
+
+    const onError = (data) => {
+      dispatch(setError(data.error));
+      dispatch(setLoading(false));
+      dispatch(addLog({
+        timestamp: new Date().toISOString(),
+        stage: 'Error',
+        message: `Pipeline halted: ${data.error}`
+      }));
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('joined', onJoined);
+    socket.on('disconnect', onDisconnect);
+    socket.on('upload:progress', onUploadProgress);
+    socket.on('repository:scan', onRepositoryScan);
+    socket.on('parser:progress', onParserProgress);
+    socket.on('chunk:progress', onChunkProgress);
+    socket.on('analysis:done', onAnalysisDone);
+    socket.on('error', onError);
+
+    if (socket.connected) {
+      onConnect();
+    }
+
     return () => {
-      if (socket) {
-        socket.disconnect();
-      }
+      socket.off('connect', onConnect);
+      socket.off('joined', onJoined);
+      socket.off('disconnect', onDisconnect);
+      socket.off('upload:progress', onUploadProgress);
+      socket.off('repository:scan', onRepositoryScan);
+      socket.off('parser:progress', onParserProgress);
+      socket.off('chunk:progress', onChunkProgress);
+      socket.off('analysis:done', onAnalysisDone);
+      socket.off('error', onError);
     };
   }, [dispatch]);
 
@@ -142,7 +164,16 @@ export const useSocket = () => {
           }
         }
       } catch (err) {
-        // status polling fallback error handler
+        if (err.response?.status === 404) {
+          clearInterval(pollInterval);
+          dispatch(setLoading(false));
+          dispatch(setError('Job not found. The server may have restarted — please submit the repository again.'));
+          dispatch(addLog({
+            timestamp: new Date().toISOString(),
+            stage: 'Error',
+            message: 'Job lost — backend restarted or job expired. Please scan again.'
+          }));
+        }
       }
     }, 2000);
 

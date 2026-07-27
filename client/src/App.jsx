@@ -31,8 +31,7 @@ import {
   setProgress, 
   setResult, 
   setError as setAnalysisError, 
-  resetAnalysis,
-  updateReadmeStream
+  resetAnalysis
 } from './features/analysisSlice.js';
 import { clearLogs, addLog } from './features/socketSlice.js';
 
@@ -444,8 +443,15 @@ export default function App() {
               {/* Tab: README Markdown */}
               {activeTab === 'readme' && (
                 <div className="github-markdown-body">
-                  {analysisState.result?.readme ? (
+                  {analysisState.status === 'completed' && analysisState.result?.readme ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysisState.result.readme}</ReactMarkdown>
+                  ) : uploadState.loading || (analysisState.status !== 'idle' && analysisState.status !== 'failed') ? (
+                    <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center text-slate-500 gap-3">
+                      <span className="loading loading-spinner loading-md text-sky-400"></span>
+                      <FaFileAlt className="text-4xl opacity-20" />
+                      <p className="text-xs">Generating README documentation...</p>
+                      <p className="text-[10px] text-slate-600">Final markdown will appear here when analysis completes.</p>
+                    </div>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full min-h-[300px] text-center text-slate-500 gap-2">
                       <FaFileAlt className="text-4xl opacity-20" />
