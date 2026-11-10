@@ -1,4 +1,4 @@
-# CodeReady AI - Repository Intelligence Platform
+# CodeReady AI - Repository Intelligence Platform ( I used antigravity to build this  for 3rd ITM Summit).
 
 CodeReady AI is an enterprise-quality AI application designed to ingest local code archives (ZIP) or clone remote git repositories, parse their Abstract Syntax Trees (AST), map architectural layers, compute quality scores, and automatically compile high-quality documentation.
 
